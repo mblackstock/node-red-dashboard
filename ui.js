@@ -28,6 +28,8 @@ var serveStatic = require('serve-static'),
     events = require('events'),
     dashboardVersion = require('./package.json').version;
 
+var cookie = require('cookie');
+
 var baseConfiguration = {};
 
 var tabs = [];
@@ -77,6 +79,26 @@ function beforeSend(msg) {
     //do nothing
 }
 
+function findClientsSocket(roomId, namespace) {
+    var res = []
+    // the default namespace is "/"
+    , ns = io.of(namespace || "/" );
+
+    if (ns) {
+        for (var id in ns.connected) {
+            if(roomId) {
+                var index = ns.connected[id].rooms.indexOf(roomId);
+                if(index !== -1) {
+                    res.push(ns.connected[id]);
+                }
+            } else {
+                res.push(ns.connected[id]);
+            }
+        }
+    }
+    return res;
+}
+
 /*
 options:
     node - the node that represents the control on a flow
@@ -117,10 +139,14 @@ function add(opt) {
     var remove = addControl(opt.tab, opt.group, opt.control);
 
     opt.node.on("input", function(msg) {
+        console.log("node input: ", msg);
+
+
         if (typeof msg.enabled === 'boolean') {
             var state = replayMessages[opt.node.id];
             if (!state) { replayMessages[opt.node.id] = state = {id: opt.node.id}; }
             state.disabled = !msg.enabled;
+            console.log("message: ", msg);
             io.emit(updateValueEventName, state);
         }
         // remove res and req as they are often circular
@@ -163,7 +189,20 @@ function add(opt) {
             toEmit.id = toStore.id = opt.node.id;
 
             // Emit and Store the data
-            io.emit(updateValueEventName, toEmit);
+            console.log("just before emit: ", toEmit);
+            var room;
+            if (toEmit.msg && toEmit.msg.user) {
+                room = 'user-'+toEmit.msg.user;
+            } else if (toEmit.msg && toEmit.msg.role) {
+                room = 'role-'+toEmit.msg.role
+            }
+            if (room) {
+                console.log("sent to room: "+room, toEmit);
+                io.sockets.in(room).emit(updateValueEventName, toEmit)
+            } else {
+                console.log("sent to all: ", toEmit);
+                io.emit(updateValueEventName, toEmit);
+            }
             replayMessages[opt.node.id] = toStore;
 
             // Handle the node output
@@ -176,6 +215,7 @@ function add(opt) {
     });
 
     var handler = function (msg) {
+        console.log("received UI message: ",msg);
         if (msg.id !== opt.node.id) { return; }
         var converted = opt.convertBack(msg.value);
         if (opt.storeFrontEndInputAsState) {
@@ -183,13 +223,23 @@ function add(opt) {
             replayMessages[msg.id] = msg;
         }
         var toSend = {payload: converted};
+        if (msg.user) {
+            toSend.user = msg.user;
+        }
+        if (msg.roles) {
+            toSend.roles = msg.roles;
+        }
         toSend = opt.beforeSend(toSend, msg) || toSend;
         toSend.socketid = toSend.socketid || msg.socketid;
         opt.node.send(toSend);
 
         if (opt.storeFrontEndInputAsState) {
-            //fwd to all UI clients
-            io.emit(updateValueEventName, msg);
+            if (msg.user) {
+                io.sockets.in('user-'+msg.user).emit(updateValueEventName, msg);
+            } else {
+                //fwd to all UI clients
+                io.emit(updateValueEventName, msg);
+            }
         }
     };
 
@@ -247,10 +297,43 @@ function init(server, app, log, redSettings) {
     log.info("Dashboard version " + dashboardVersion + " started at " + fullPath);
 
     io.on('connection', function(socket) {
+        var socketCookie = socket.handshake.headers.cookie;
+        var dashboardCookie = cookie.parse(socketCookie || '').dashboard;
+
+        console.log("socket cookie: ",socketCookie);
+        console.log("dashboard cookie: ",dashboardCookie);
+
+        var roles = [];
+        if (dashboardCookie) {
+            dashboardCookie = JSON.parse(dashboardCookie);
+            socket.join('user-'+dashboardCookie.username);
+            dashboardCookie.roles.forEach(function(role) {
+                roles.push(role);
+                socket.join('role-'+role);
+            });
+            socket.user = dashboardCookie.username;
+            socket.roles = dashboardCookie.roles;
+        }
+
         ev.emit("newsocket", socket.client.id, socket.request.connection.remoteAddress);
         updateUi(socket);
 
-        socket.on(updateValueEventName, ev.emit.bind(ev, updateValueEventName));
+        //socket.on(updateValueEventName, ev.emit.bind(ev, updateValueEventName));
+        socket.on(updateValueEventName, function(msg) {
+            // add user and roles to message
+            console.log("socket rooms: ", socket.rooms);
+            if (socket.user) {
+                msg.user = socket.user;
+            }
+            if (socket.roles) {
+                msg.roles = socket.roles;
+            }
+            if (roles.length > 0) {
+                msg.roles = roles;
+            }
+            ev.emit(updateValueEventName, msg);
+        });
+
         socket.on('ui-replay-state', function() {
             var ids = Object.getOwnPropertyNames(replayMessages);
             ids.forEach(function (id) {
@@ -269,10 +352,13 @@ function init(server, app, log, redSettings) {
 
 var updateUiPending = false;
 function updateUi(to) {
+    var socketsToUpdate;
     if (!to) {
         if (updateUiPending) { return; }
         updateUiPending = true;
-        to = io;
+        socketsToUpdate = findClientsSocket();
+    } else {
+        socketsToUpdate = [to];
     }
     process.nextTick(function() {
         tabs.forEach(function(t) {
@@ -281,11 +367,17 @@ function updateUi(to) {
         links.forEach(function(l) {
             l.theme = baseConfiguration.theme;
         });
-        to.emit('ui-controls', {
-            site: baseConfiguration.site,
-            theme: baseConfiguration.theme,
-            tabs: tabs,
-            links: links
+        var filteredTabs = tabs.filter(function(tab) {
+            return !tab.header.startsWith('remove');
+            // check for tab role
+        });
+        socketsToUpdate.forEach(function(sock) {
+            sock.emit('ui-controls', {
+                site: baseConfiguration.site,
+                theme: baseConfiguration.theme,
+                tabs: filteredTabs,
+                links: links
+            });
         });
         updateUiPending = false;
     });
