@@ -5,7 +5,8 @@ module.exports = function(RED) {
         this.config = {
             name: config.name,
             order: config.order || 0,
-            icon: config.icon || ''
+            icon: config.icon || '',
+            role: config.role || ''
         };
     }
 

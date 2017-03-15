@@ -367,11 +367,13 @@ function updateUi(to) {
         links.forEach(function(l) {
             l.theme = baseConfiguration.theme;
         });
-        var filteredTabs = tabs.filter(function(tab) {
-            return !tab.header.startsWith('remove');
-            // check for tab role
-        });
         socketsToUpdate.forEach(function(sock) {
+            var filteredTabs = tabs.filter(function(tab) {
+                console.log("tab role: "+tab.role+" user roles: ", sock.roles);
+                if (!sock.roles) { return true;}
+                if (tab.role === '') {return true;}
+                return sock.roles.indexOf(tab.role) >= 0;
+            });
             sock.emit('ui-controls', {
                 site: baseConfiguration.site,
                 theme: baseConfiguration.theme,
@@ -413,6 +415,7 @@ function addControl(tab, groupHeader, control) {
             header: tab.config.name,
             order: parseFloat(tab.config.order),
             icon: tab.config.icon,
+            role: tab.config.role,
             items: []
         };
         tabs.push(foundTab);
