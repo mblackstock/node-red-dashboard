@@ -29,6 +29,7 @@ var serveStatic = require('serve-static'),
     dashboardVersion = require('./package.json').version;
 
 var cookie = require('cookie');
+var jwt = require('jsonwebtoken');
 
 var baseConfiguration = {};
 
@@ -82,13 +83,13 @@ function beforeSend(msg) {
 function findClientsSocket(roomId, namespace) {
     var res = []
     // the default namespace is "/"
-    , ns = io.of(namespace || "/" );
+    var ns = io.of(namespace || "/" );
 
     if (ns) {
         for (var id in ns.connected) {
-            if(roomId) {
+            if (roomId) {
                 var index = ns.connected[id].rooms.indexOf(roomId);
-                if(index !== -1) {
+                if (index !== -1) {
                     res.push(ns.connected[id]);
                 }
             } else {
@@ -266,6 +267,8 @@ function init(server, app, log, redSettings) {
     var uiSettings = redSettings.ui || {};
     settings.path = uiSettings.path || 'ui';
     settings.defaultGroupHeader = uiSettings.defaultGroup || 'Default';
+    settings.requireLogin = uiSettings.requireLogin || true;
+    settings.redirectUrl = uiSettings.redirectUrl || '/login';
 
     var fullPath = join(redSettings.httpNodeRoot, settings.path);
     var socketIoPath = join(fullPath, 'socket.io');
@@ -296,23 +299,40 @@ function init(server, app, log, redSettings) {
 
     log.info("Dashboard version " + dashboardVersion + " started at " + fullPath);
 
-    io.on('connection', function(socket) {
+    // get the user and roles from the socket handshake
+    function getUserRoles(socket) {
+        var userInfo;
         var socketCookie = socket.handshake.headers.cookie;
-        var dashboardCookie = cookie.parse(socketCookie || '').dashboard;
+        var rawCookie = cookie.parse(socketCookie || '')['dashboard'];
+        if (rawCookie) {
+            console.log('cookie: '+rawCookie);
+            try {
+                userInfo = jwt.verify(rawCookie, 'secret');
+            } catch (err) {
+                console.log('bad token: ', err);
+            }
+            console.log('userInfo: ', userInfo);
+        }
+        return userInfo;
+    }
 
-        console.log("socket cookie: ",socketCookie);
-        console.log("dashboard cookie: ",dashboardCookie);
+    io.on('connection', function(socket) {
+        var userInfo = getUserRoles(socket);
 
-        var roles = [];
-        if (dashboardCookie) {
-            dashboardCookie = JSON.parse(dashboardCookie);
-            socket.join('user-'+dashboardCookie.username);
-            dashboardCookie.roles.forEach(function(role) {
-                roles.push(role);
+        // redirect if not logged in
+        if (!userInfo && settings.requireLogin) {
+            console.log('redirect - cookie not found or not parsed');
+            socket.emit('redirect', settings.redirectUrl);
+            return;
+        }
+
+        if (userInfo) {
+            socket.join('user-'+userInfo.username);
+            userInfo.roles.forEach(function(role) {
                 socket.join('role-'+role);
             });
-            socket.user = dashboardCookie.username;
-            socket.roles = dashboardCookie.roles;
+            socket.user = userInfo.username;
+            socket.roles = userInfo.roles;
         }
 
         ev.emit("newsocket", socket.client.id, socket.request.connection.remoteAddress);
@@ -327,9 +347,6 @@ function init(server, app, log, redSettings) {
             }
             if (socket.roles) {
                 msg.roles = socket.roles;
-            }
-            if (roles.length > 0) {
-                msg.roles = roles;
             }
             ev.emit(updateValueEventName, msg);
         });

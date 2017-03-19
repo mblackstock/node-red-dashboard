@@ -161,6 +161,10 @@ app.controller('MainController', ['$mdSidenav', '$window', 'UiEvents', '$locatio
             }
         });
 
+        events.on('redirect', function(url) {
+            $window.location.href = url;
+        });
+
         events.on('disconnect', function(m) {
             $mdToast.show({
                 template: '<md-toast><div class="md-toast-error">&#x2718; &nbsp; Connection lost</div></md-toast>',
