@@ -140,14 +140,11 @@ function add(opt) {
     var remove = addControl(opt.tab, opt.group, opt.control);
 
     opt.node.on("input", function(msg) {
-        console.log("node input: ", msg);
-
 
         if (typeof msg.enabled === 'boolean') {
             var state = replayMessages[opt.node.id];
             if (!state) { replayMessages[opt.node.id] = state = {id: opt.node.id}; }
             state.disabled = !msg.enabled;
-            console.log("message: ", msg);
             io.emit(updateValueEventName, state);
         }
         // remove res and req as they are often circular
@@ -190,7 +187,6 @@ function add(opt) {
             toEmit.id = toStore.id = opt.node.id;
 
             // Emit and Store the data
-            console.log("just before emit: ", toEmit);
             var room;
             if (toEmit.msg && toEmit.msg.user) {
                 room = 'user-'+toEmit.msg.user;
@@ -198,10 +194,8 @@ function add(opt) {
                 room = 'role-'+toEmit.msg.role
             }
             if (room) {
-                console.log("sent to room: "+room, toEmit);
                 io.sockets.in(room).emit(updateValueEventName, toEmit)
             } else {
-                console.log("sent to all: ", toEmit);
                 io.emit(updateValueEventName, toEmit);
             }
             replayMessages[opt.node.id] = toStore;
@@ -216,7 +210,6 @@ function add(opt) {
     });
 
     var handler = function (msg) {
-        console.log("received UI message: ",msg);
         if (msg.id !== opt.node.id) { return; }
         var converted = opt.convertBack(msg.value);
         if (opt.storeFrontEndInputAsState) {
@@ -267,8 +260,18 @@ function init(server, app, log, redSettings) {
     var uiSettings = redSettings.ui || {};
     settings.path = uiSettings.path || 'ui';
     settings.defaultGroupHeader = uiSettings.defaultGroup || 'Default';
-    settings.requireLogin = uiSettings.requireLogin || true;
-    settings.redirectUrl = uiSettings.redirectUrl || '/login';
+
+    // multi-user configuration
+    // set the login URL and the jwtSecret to enable
+    settings.requireLogin = uiSettings.loginUrl ? true : false;
+    settings.loginUrl = uiSettings.loginUrl;
+    settings.cookieName = uiSettings.cookieName || 'dashboard';
+    if (settings.requireLogin && !uiSettings.jwtSecret) {
+        log.error("Dashboard login required but no token secret is set");
+        return;
+    }
+
+    settings.jwtSecret = uiSettings.jwtSecret;
 
     var fullPath = join(redSettings.httpNodeRoot, settings.path);
     var socketIoPath = join(fullPath, 'socket.io');
@@ -298,20 +301,21 @@ function init(server, app, log, redSettings) {
     });
 
     log.info("Dashboard version " + dashboardVersion + " started at " + fullPath);
-
+    if (settings.requireLogin) {
+        log.info("Dashboard multi-user support enabled");
+    }
+    
     // get the user and roles from the socket handshake
     function getUserRoles(socket) {
         var userInfo;
         var socketCookie = socket.handshake.headers.cookie;
-        var rawCookie = cookie.parse(socketCookie || '')['dashboard'];
+        var rawCookie = cookie.parse(socketCookie || '')[settings.cookieName];
         if (rawCookie) {
-            console.log('cookie: '+rawCookie);
             try {
-                userInfo = jwt.verify(rawCookie, 'secret');
+                userInfo = jwt.verify(rawCookie, settings.jwtSecret);
             } catch (err) {
-                console.log('bad token: ', err);
+                log.info('token error: ', err);
             }
-            console.log('userInfo: ', userInfo);
         }
         return userInfo;
     }
@@ -321,8 +325,7 @@ function init(server, app, log, redSettings) {
 
         // redirect if not logged in
         if (!userInfo && settings.requireLogin) {
-            console.log('redirect - cookie not found or not parsed');
-            socket.emit('redirect', settings.redirectUrl);
+            socket.emit('redirect', settings.loginUrl);
             return;
         }
 
@@ -341,7 +344,6 @@ function init(server, app, log, redSettings) {
         //socket.on(updateValueEventName, ev.emit.bind(ev, updateValueEventName));
         socket.on(updateValueEventName, function(msg) {
             // add user and roles to message
-            console.log("socket rooms: ", socket.rooms);
             if (socket.user) {
                 msg.user = socket.user;
             }
@@ -386,7 +388,6 @@ function updateUi(to) {
         });
         socketsToUpdate.forEach(function(sock) {
             var filteredTabs = tabs.filter(function(tab) {
-                console.log("tab role: "+tab.role+" user roles: ", sock.roles);
                 if (!sock.roles) { return true;}
                 if (tab.role === '') {return true;}
                 return sock.roles.indexOf(tab.role) >= 0;
