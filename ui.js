@@ -188,10 +188,10 @@ function add(opt) {
 
             // Emit and Store the data
             var room;
-            if (toEmit.msg && toEmit.msg.user) {
-                room = 'user-'+toEmit.msg.user;
+            if (msg.user) {
+                room = 'user-'+msg.user;
             } else if (toEmit.msg && toEmit.msg.role) {
-                room = 'role-'+toEmit.msg.role
+                room = 'role-'+msg.role
             }
             if (room) {
                 io.sockets.in(room).emit(updateValueEventName, toEmit)
@@ -228,6 +228,8 @@ function add(opt) {
         opt.node.send(toSend);
 
         if (opt.storeFrontEndInputAsState) {
+
+            // TODO: if user field is set, send only to users
             if (msg.user) {
                 io.sockets.in('user-'+msg.user).emit(updateValueEventName, msg);
             } else {
@@ -304,7 +306,7 @@ function init(server, app, log, redSettings) {
     if (settings.requireLogin) {
         log.info("Dashboard multi-user support enabled");
     }
-    
+
     // get the user and roles from the socket handshake
     function getUserRoles(socket) {
         var userInfo;
